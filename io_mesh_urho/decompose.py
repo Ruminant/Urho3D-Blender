@@ -836,13 +836,26 @@ def DerigifyArmature(armature):
 # else:
 #   poseMatrix = upAxis.matrix.inverted() * origin.matrix * poseMatrix  
 
-def DecomposeArmature(scene, armatureObj, tData, tOptions):
+def DecomposeArmature(scene, armatureObj, meshObj, tData, tOptions):
     
     bonesMap = tData.bonesMap
 
     # 'armature.pose.bones' contains bones data for the current frame
     # 'armature.data.bones' contains bones data for the rest position (not true?)
     armature = armatureObj.data
+
+    # Check that armature and children objects have scale, rotation applied and the same origin
+    if armatureObj.scale != Vector((1.0, 1.0, 1.0)):
+        log.warning('You should apply scale to armature {:s}'.format(armatureObj.name))
+    if armatureObj.rotation_quaternion != Quaternion((1.0, 0.0, 0.0, 0.0)):
+        log.warning('You should apply rotation to armature {:s}'.format(armatureObj.name))
+    if meshObj.scale != Vector((1.0, 1.0, 1.0)):
+        log.warning('You should apply scale to object {:s}'.format(meshObj.name))
+    if meshObj.rotation_quaternion != Quaternion((1.0, 0.0, 0.0, 0.0)):
+        log.warning('You should apply rotation to object {:s}'.format(meshObj.name))
+    if not tOptions.globalOrigin and meshObj.location != armatureObj.location:
+        log.warning('Object {:s} should have the same origin as its armature {:s}'
+                    .format(meshObj.name, armatureObj.name))
 
     # Force the armature in the rest position (warning: https://developer.blender.org/T24674)
     savedPosePosition = armature.pose_position
@@ -962,24 +975,7 @@ def DecomposeActions(scene, armatureObj, tData, tOptions):
     if not armatureObj.animation_data:
         log.warning('Armature {:s} has no animation data'.format(armatureObj.name))
         return
-
-    # Check that armature and children objects have scale, rotation applied and the same origin
-    if armatureObj.scale != Vector((1.0, 1.0, 1.0)):
-        log.warning('You should apply scale to armature {:s}'.format(armatureObj.name))
-    if armatureObj.rotation_quaternion != Quaternion((1.0, 0.0, 0.0, 0.0)):
-        log.warning('You should apply rotation to armature {:s}'.format(armatureObj.name))
-    for obj in armatureObj.children:
-        if obj.type == 'MESH':
-            if obj.scale != Vector((1.0, 1.0, 1.0)):
-                log.warning('You should apply scale to object {:s}'.format(obj.name))
-            if obj.rotation_quaternion != Quaternion((1.0, 0.0, 0.0, 0.0)):
-                log.warning('You should apply rotation to object {:s}'.format(obj.name))
-            if obj.location != armatureObj.location:
-                log.warning('Object {:s} should have the same origin as its armature {:s}'.format(obj.name, 
-                            armatureObj.name))
-            
-    # armatureObj.animation_data.action ???
-            
+                        
     originMatrix = Matrix.Identity(4)
     if tOptions.actionsGlobalOrigin:
         originMatrix = armatureObj.matrix_world
@@ -1016,9 +1012,6 @@ def DecomposeActions(scene, armatureObj, tData, tOptions):
             if tOptions.doUsedActions and action and not action in animationObjects:
                 animationObjects.append(action)
             previous = strip
-
-    # armatureObj.animation_data.action
-    # armatureObj.animation_data.nla_tracks.active
                 
     # Add all the Actions (even if unused or deleted)
     if tOptions.doAllActions:
@@ -1330,8 +1323,12 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
 
     # Mesh vertex groups
     meshVertexGroups = meshObj.vertex_groups
+    
+    # Errors helpers
     notBonesGroups = set()
     missingGroups = set()
+    overrideBones = set()
+    missingBones = set()
 
     # Python trick: C = A and B, if A is False (None, empty list) then C=A, if A is
     # True (object, populated list) then C=B
@@ -1548,45 +1545,36 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
                     
             # Set Vertex bones weights
             if tOptions.doGeometryWei:
-                
-                # we store a mapping of influences for this vertex
-                min_weight = 0.0
-                influences = {}
-                for vg in vertex.groups:
-                    group_idx = vg.group
-                    
+                weights = []
+                # Scan all the vertex group associated to the vertex, type: VertexGroupElement(bpy_struct)
+                for g in vertex.groups:
+                    # The group name should be the bone name, but it can also be an user made vertex group
                     try:
-                        bone_idx = groupIndexToBoneIndex[group_idx]
-                        if vg.weight > min_weight:
-                            influences[bone_idx] = vg.weight
-                        
-                            if len(influences)>4:
-                                keys = sorted(influences, key=lambda x: influences[x], reverse=True)[:4]
-                                influences = {k: influences[k] for k in keys}
-                    except:
-                        missingGroups.add(meshObj.vertex_groups[group_idx].name)
-
-                # normalise weights
-                t = sum( influences.values() )
-                influences = {k: v/t for k,v in influences.items()}
-                
-                if not influences:
-                    tVertex.weights = [(0, 0.0)]
-                else:
-                    # sort influences and ensure we only have a maximum of four
-                    joint_indices = [0,0,0,0]
-                    joint_weights = [0,0,0,0]
-                    for weight_idx, bone_idx in enumerate(influences):
-                        if weight_idx < 4:
-                            index = weight_idx
-                        else:
-                            # replace the weight with the least influence
-                            index = joint_weights.index(min(joint_weights))
-                            
-                        joint_indices[index] = bone_idx
-                        joint_weights[index] = influences[bone_idx]
-                    # the weights will be kept in order (from most influential to least)
-                    tVertex.weights = list(zip(joint_indices, joint_weights))                 
+                        boneName = meshVertexGroups[g.group].name
+                        try:
+                            boneIndex = bonesMap[boneName].index
+                            if g.weight > 0.0 or not weights:
+                                weights.append( (boneIndex, g.weight) )
+                        except KeyError:
+                            notBonesGroups.add(boneName)
+                    except IndexError:
+                        missingGroups.add(str(g.group))
+                # If the mesh has a bone for parent use it for a 100% weight skinning
+                if meshObj.parent_type == 'BONE' and meshObj.parent_bone:
+                    boneName = meshObj.parent_bone
+                    # We shouldn't have any skinning on the vertex
+                    if weights:
+                        overrideBones.add(boneName)
+                    try:
+                        boneIndex = bonesMap[boneName].index
+                        weights.append( (boneIndex, 1.0) )
+                    except KeyError:
+                        missingBones.add(boneName)
+                # If we found no bone weight (not even one with weight zero) leave the list equal to None
+                if weights:
+                    tVertex.weights = weights
+                elif tOptions.doForceElements:
+                    tVertex.weights = [(0, 0.0)]      
                      
             # All this code do is "tVertexIndex = verticesMapList.index(tVertex)", but we use
             # a map to speed up.
@@ -1641,10 +1629,14 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
     tOptions.newLod = False
 
     if notBonesGroups:
-        log.warning("Maybe these groups have no bone: {:s}".format( ", ".join(notBonesGroups) ))
+        log.info("These groups are not used for bone deforms: {:s}".format( ", ".join(notBonesGroups) ))
     if missingGroups:
         log.warning("These group indices are missing: {:s}".format( ", ".join(missingGroups) ))
-
+    if overrideBones:
+        log.warning("These parent bones will override the deforms: {:s}".format( ", ".join(overrideBones) ))
+    if missingBones:
+        log.warning("These parent bones are missing in the armature: {:s}".format( ", ".join(missingBones) ))
+    
     # Generate tangents for the last LOD of every geometry with new vertices
     if tOptions.doGeometryTan:
         lodLevels = []
@@ -1894,8 +1886,9 @@ def Scan(context, tDataList, tOptions):
             # First we need to populate the skeleton, then animations and then geometries
             if tOptions.doBones:
                 armatureObj = None
-                # Check if obj has an armature parent, and if it is not attached to a bone (like hair to head bone)
-                if obj.parent and obj.parent.type == 'ARMATURE' and obj.parent_type != 'BONE':
+                # Check if obj has an armature parent, if it is attached to a bone (like hair to head bone)
+                # we'll skin it to the bone with 100% weight (but it shouldn't have bone vertex groups)
+                if obj.parent and obj.parent.type == 'ARMATURE':
                     armatureObj = obj.parent
                 else:
                     # Check if there is an Armature modifier
@@ -1905,8 +1898,9 @@ def Scan(context, tDataList, tOptions):
                             break
                 # Decompose armature and animations
                 if armatureObj:
-                    DecomposeArmature(scene, armatureObj, tData, tOptions)
-                    if tOptions.doAnimations:
+                    if not tData.bonesMap or not tOptions.mergeObjects:
+                        DecomposeArmature(scene, armatureObj, obj, tData, tOptions)
+                    if tOptions.doAnimations and (not tData.animationsList or not tOptions.mergeObjects):
                         DecomposeActions(scene, armatureObj, tData, tOptions)
                 else:
                     log.warning("Object {:s} has no armature".format(name) )
