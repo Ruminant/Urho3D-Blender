@@ -307,6 +307,7 @@ class TData:
             # if the material in the slot is valid...
             if slot.material:
                 self.materialsUsed[slot.material] = True
+
            
 class TOptions:
     def __init__(self):
@@ -1437,20 +1438,28 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
     progressCur = 0
     progressTot = 0.01 * len(mesh.tessfaces)
 
+<<<<<<< HEAD
     # even if no material slots exist, our minimum count is forced to 1
     # to ensure at least one geometry instance.
     numMaterials = max(len(meshObj.material_slots), 1)
 
+=======
+>>>>>>> Geometry order now defined by material slot order
     # generate a geometry per material slot (material index == geometry index)
     # we *can* end up creating some TGeometry for a material that isn't used,
     # but the indices remain correct, so our material indices in URHO match
     # the slot order in Blender (which is the primary motivation behind this quirk)
+<<<<<<< HEAD
     for i in range(numMaterials):
+=======
+    for i, material in enumerate(meshObj.material_slots):
+>>>>>>> Geometry order now defined by material slot order
         geometriesList.append(TGeometry())
         geometryIndex = i
         materialIndex = i
         materialGeometryMap[geometryIndex] = materialIndex
         log.info("New Geometry{:d} created for material {:d}".format(geometryIndex, materialIndex))
+<<<<<<< HEAD
 
     # map group index to a bone
     if tOptions.doGeometryWei:
@@ -1479,6 +1488,10 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
             print(usedGroups)
             raise
     
+=======
+        
+
+>>>>>>> Geometry order now defined by material slot order
     for face in mesh.tessfaces:
 
         if (progressCur % 10) == 0:
@@ -1907,7 +1920,16 @@ def Scan(context, tDataList, tOptions):
 
     if tOptions.useLods and noLod:
         log.warning("No LODs found")
-
+            # Decompose geometries
+            if tOptions.doGeometries:
+                DecomposeMesh(scene, obj, tData, tOptions, tData.errorsDict)
+    
+    # decompose any materials that were referenced by our exported objects
+    if tOptions.doMaterials:
+        for material, isUsed in tData.materialsUsed.items():
+            if isUsed:
+                tData.materialsList.append( DecomposeMaterial(scene, material ) )
+        
     if noWork:
         log.warning("No objects to work on")
 
