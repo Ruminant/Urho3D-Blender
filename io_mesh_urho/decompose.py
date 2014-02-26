@@ -194,6 +194,8 @@ class TMaterial:
         self.specularTexName = None
         # Emissive texture filename (no path)
         self.lightmapTexName = None
+        # This material is shadeless
+        self.shadeless = False
 
     def __eq__(self, other):
         if hasattr(other, 'name'):
@@ -204,6 +206,7 @@ class TMaterial:
         return (" name: {:s}\n"
                 " image: \"{:s}\""
                 .format(self.name, self.diffuseTexName) )
+
 
 #--------------------
 # Animations classes
@@ -274,7 +277,14 @@ class TData:
         self.animationsList = []
         # Dictionary container for errors
         self.errorsDict = {}
-
+        # A map which stores whether or not a material is being used by an exported mesh
+        self.materialsUsed = { material : False for material in bpy.data.materials }
+        
+    def MarkUsedMaterials(self, object, mesh):
+        """mark materials used in the given object as being in use."""
+        for slot in object.material_slots:
+            self.materialsUsed[slot.material] = True
+           
 class TOptions:
     def __init__(self):
         self.newLod = True
@@ -1127,7 +1137,7 @@ def DecomposeActions(scene, armatureObj, tData, tOptions):
         else:
             # Get all the names of the bones in the map
             bones = bonesMap.keys()
-	
+    
         if not bones:
             log.warning("No bones for animation {:s}".format(object.name))
             continue
@@ -1220,6 +1230,50 @@ def DecomposeActions(scene, armatureObj, tData, tOptions):
     scene.frame_set(savedFrame)
 
 
+#--------------------
+# Decompose materials
+#--------------------
+
+def DecomposeMaterial(scene, material):
+    """returns a TMaterial representation of the input."""
+    
+    tMaterial = TMaterial(material.name)
+    
+    tMaterial.diffuseColor = material.diffuse_color
+    tMaterial.diffuseIntensity = material.diffuse_intensity
+    tMaterial.specularColor = material.specular_color
+    tMaterial.specularIntensity = material.specular_intensity
+    tMaterial.specularHardness = material.specular_hardness
+    try:
+        tMaterial.twoSided = material.urho.double_sided
+    except AttributeError:
+        tMaterial.twoSided = False
+    tMaterial.shadeless = material.use_shadeless
+    if material.use_transparency:
+        tMaterial.opacity = material.alpha
+        
+    # In reverse order so the first slots have precedence
+    for texture in reversed(material.texture_slots):
+        if texture is None or texture.texture_coords != 'UV':
+            continue
+        textureData = bpy.data.textures[texture.name]
+        if textureData.type != 'IMAGE':
+            continue
+        if textureData.image is None:
+            continue
+        imageName = textureData.image.name
+        if texture.use_map_color_diffuse:
+            tMaterial.diffuseTexName = imageName
+        if texture.use_map_normal:
+            tMaterial.normalTexName = imageName
+        if texture.use_map_color_spec:
+            tMaterial.specularTexName = imageName
+        if "_LIGHTMAP" in texture.name:
+            tMaterial.lightmapTexName = imageName
+        ##tMaterial.imagePath = bpy.path.abspath(faceUv.image.filepath)
+    
+    return tMaterial
+    
 #---------------------------------
 # Decompose geometries and morphs
 #---------------------------------
@@ -1239,11 +1293,15 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
     morphsList = tData.morphsList
     bonesMap = tData.bonesMap
     
+
     verticesMap = {}
     
     # Create a Mesh datablock with modifiers applied
     # (note: do not apply if not needed, it loses precision)
     mesh = meshObj.to_mesh(scene, tOptions.applyModifiers, tOptions.applySettings)
+    
+    # make a note of which materials are used
+    tData.MarkUsedMaterials(meshObj, mesh)
     
     log.info("Decomposing mesh: {:s} ({:d} vertices)".format(meshObj.name, len(mesh.vertices)) )
     
@@ -1330,6 +1388,18 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
     progressCur = 0
     progressTot = 0.01 * len(mesh.tessfaces)
 
+    # generate a geometry per material slot (material index == geometry index)
+    # we *can* end up creating some TGeometry for a material that isn't used,
+    # but the indices remain correct, so our material indices in URHO match
+    # the slot order in Blender (which is the primary motivation behind this quirk)
+    for i, material in enumerate(meshObj.material_slots):
+        geometriesList.append(TGeometry())
+        geometryIndex = i
+        materialIndex = i
+        materialGeometryMap[geometryIndex] = materialIndex
+        log.info("New Geometry{:d} created for material {:d}".format(geometryIndex, materialIndex))
+        
+
     for face in mesh.tessfaces:
 
         if (progressCur % 10) == 0:
@@ -1354,57 +1424,10 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
         faceRgbColor = fcol and (fcol.color1, fcol.color2, fcol.color3, fcol.color4)
         fcol = colorsAlpha and colorsAlpha[face.index]
         faceAlphaColor = fcol and (fcol.color1, fcol.color2, fcol.color3, fcol.color4)
-
-        # Get the face material
-        # If no material is associated then face.material_index is 0 but mesh.materials
-        # is not None
-        material = None
-        if mesh.materials and len(mesh.materials):
-            material = mesh.materials[face.material_index]
         
-        # Add the material if it is new
-        if tOptions.doMaterials and material and (not material.name in materialsList):
-            tMaterial = TMaterial(material.name)
-            materialsList.append(tMaterial)
-
-            tMaterial.diffuseColor = material.diffuse_color
-            tMaterial.diffuseIntensity = material.diffuse_intensity
-            tMaterial.specularColor = material.specular_color
-            tMaterial.specularIntensity = material.specular_intensity
-            tMaterial.specularHardness = material.specular_hardness
-            tMaterial.twoSided = mesh.show_double_sided 
-            if material.use_transparency:
-                tMaterial.opacity = material.alpha
-                
-            # In reverse order so the first slots have precedence
-            for texture in reversed(material.texture_slots):
-                if texture is None or texture.texture_coords != 'UV':
-                    continue
-                textureData = bpy.data.textures[texture.name]
-                if textureData.type != 'IMAGE':
-                    continue
-                if textureData.image is None:
-                    continue
-                imageName = textureData.image.name
-                if texture.use_map_color_diffuse:
-                    tMaterial.diffuseTexName = imageName
-                if texture.use_map_normal:
-                    tMaterial.normalTexName = imageName
-                if texture.use_map_color_spec:
-                    tMaterial.specularTexName = imageName
-                if "_LIGHTMAP" in texture.name:
-                    tMaterial.lightmapTexName = imageName
-                ##tMaterial.imagePath = bpy.path.abspath(faceUv.image.filepath)
-
-        # From the material name search for the geometry index, or add it to the map if missing
-        materialName = material and material.name
-        try:
-            geometryIndex = materialGeometryMap[materialName]
-        except KeyError:
-            geometryIndex = len(geometriesList)
-            geometriesList.append(TGeometry())
-            materialGeometryMap[materialName] = geometryIndex
-            log.info("New Geometry{:d} created for material {:s}".format(geometryIndex, materialName))
+        # we use the material index directly
+        materialIndex = face.material_index     
+        geometryIndex = materialIndex
 
         # Get the geometry associated to the material
         geometry = geometriesList[geometryIndex]
@@ -1415,7 +1438,7 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
             tLodLevel = TLodLevel()
             tLodLevel.distance = tOptions.lodDistance
             geometry.lodLevels.append(tLodLevel)
-            log.info("New LOD{:d} created for material {:s}".format(lodLevelIndex, materialName))
+            log.info("New LOD{:d} created for material {:d}".format(lodLevelIndex, materialIndex))
         else:
             tLodLevel = geometry.lodLevels[-1]
 
@@ -1839,7 +1862,13 @@ def Scan(context, tDataList, tOptions):
             # Decompose geometries
             if tOptions.doGeometries:
                 DecomposeMesh(scene, obj, tData, tOptions, tData.errorsDict)
-
+    
+    # decompose any materials that were referenced by our exported objects
+    if tOptions.doMaterials:
+        for material, isUsed in tData.materialsUsed.items():
+            if isUsed:
+                tData.materialsList.append( DecomposeMaterial(scene, material ) )
+        
     if noWork:
         log.warning("No objects to work on")
 

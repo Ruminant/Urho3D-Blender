@@ -381,7 +381,9 @@ class UrhoMaterial:
         self.lightmapTexName = None
         # Material is two sided
         self.twoSided = False
-
+        # Material is shadeless
+        self.shadeless = False
+        
     def getTexturesNumber(self):
         return 4;
 
@@ -1183,13 +1185,22 @@ def UrhoExport(tData, uExportOptions, uExportData, errorsDict):
 
         technique = "Techniques/NoTexture"
         if tMaterial.diffuseTexName:
+            
+            # shadeless materials can't have normals,specular or lightmaps
             technique = "Techniques/Diff"
-            if tMaterial.normalTexName:
-                technique += "Normal"
-            if tMaterial.specularTexName:
-                technique += "Spec"
-            if tMaterial.lightmapTexName and not tMaterial.normalTexName and not tMaterial.specularTexName:
-                technique += "LightMap"
+            if tMaterial.shadeless:
+                technique += "Unlit"
+            else:
+                if tMaterial.normalTexName:
+                    technique += "Normal"
+                if tMaterial.specularTexName:
+                    technique += "Spec"
+                if tMaterial.lightmapTexName and not tMaterial.normalTexName and not tMaterial.specularTexName:
+                    technique += "LightMap"
+        else:
+            if tMaterial.shadeless:
+                technique = "Techniques/NoTextureUnlit"
+
         if alpha < 1.0:
             technique += "Alpha";
 
@@ -1199,7 +1210,7 @@ def UrhoExport(tData, uExportOptions, uExportData, errorsDict):
             diffuse = tMaterial.diffuseColor * tMaterial.diffuseIntensity
             uMaterial.diffuseColor = (diffuse.r, diffuse.g, diffuse.b, alpha)
             
-        if tMaterial.specularColor and tMaterial.specularHardness:
+        if tMaterial.specularColor and tMaterial.specularHardness and not tMaterial.shadeless:
             specular = tMaterial.specularColor * tMaterial.specularIntensity
             power = tMaterial.specularHardness
             uMaterial.specularColor = (specular.r, specular.g, specular.b, power)

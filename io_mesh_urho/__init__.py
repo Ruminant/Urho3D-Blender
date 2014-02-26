@@ -115,10 +115,31 @@ consoleHandler = logging.StreamHandler()
 consoleHandler.addFilter(consoleFilter)
 log.addHandler(consoleHandler)
 
+# Extra properties to aid in material export
+class UrhoMaterialProperties(bpy.types.PropertyGroup):
+    double_sided = BoolProperty(
+            name = "Double Sided",
+            description = "Tags the material as double-sided for export",
+            default = False)
 
 #--------------------
 # Blender UI
 #--------------------
+
+# A panel to display our extra material properties
+class UrhoMaterialPropPanel(bpy.types.Panel):
+    bl_label = 'Urho3D Properties'
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = 'material'
+    
+    def draw(self, context):
+        obj = context.material
+        if not obj:
+            return
+        if obj.urho:
+            self.layout.prop( obj.urho, "double_sided" )
+
 
 # Addon preferences, they are visible in the Users Preferences Addons page,
 # under the Urho exporter addon row
@@ -680,8 +701,12 @@ def register():
     bpy.utils.register_class(UrhoExportResetOperator) 
     bpy.utils.register_class(UrhoExportRenderPanel)
     bpy.utils.register_class(UrhoReportDialog)
+    bpy.utils.register_class(UrhoMaterialProperties)
+    bpy.utils.register_class(UrhoMaterialPropPanel)
     
     bpy.types.Scene.urho_exportsettings = bpy.props.PointerProperty(type=UrhoExportSettings)
+    
+    bpy.types.Material.urho = bpy.props.PointerProperty(type=UrhoMaterialProperties)
     
     bpy.context.user_preferences.filepaths.use_relative_paths = False
     
@@ -707,8 +732,12 @@ def unregister():
     bpy.utils.unregister_class(UrhoExportResetOperator) 
     bpy.utils.unregister_class(UrhoExportRenderPanel)
     bpy.utils.unregister_class(UrhoReportDialog)
+    bpy.utils.unregister_class(UrhoMaterialPropPanel)
+    bpy.utils.unregister_class(UrhoMaterialProperties)
     
     del bpy.types.Scene.urho_exportsettings
+    
+    del bpy.types.Material.urho
     
     #if PostLoad in bpy.app.handlers.load_post:
     #    bpy.app.handlers.load_post.remove(PostLoad)
@@ -950,4 +979,4 @@ def ExecuteUrhoExport(context):
 
     
 if __name__ == "__main__":
-	register()
+    register()
