@@ -1404,7 +1404,34 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
         materialIndex = i
         materialGeometryMap[geometryIndex] = materialIndex
         log.info("New Geometry{:d} created for material {:d}".format(geometryIndex, materialIndex))
-        
+
+    # map group index to a bone
+    if tOptions.doGeometryWei:
+        # from addons/io_scene_x/export.x.py
+        # we generate a mapping from group index to bone index
+        # NOTE: we only consider groups which share names with bones.
+        poseBoneNames = bonesMap.keys()
+        vertexGroupNames = [group.name for group in meshVertexGroups]
+        usedBoneNames = set(poseBoneNames).intersection(vertexGroupNames)
+        usedGroups = [group
+                    for group in meshObj.vertex_groups
+                    for bone_name in usedBoneNames
+                    if group.name == bone_name]        
+        try:
+            groupIndexToBoneIndex = {group.index : bonesMap[group.name].index
+                for group in usedGroups}
+        except:
+            # not sure how this error will crop up, but I want to stop the world
+            # rather than "deal with it"...
+            print("ERROR: failed to find bone from vertex group!")
+            print("poseBoneNames/////////////")
+            print(poseBoneNames)
+            print("usedBoneNames/////////////")
+            print(usedBoneNames)
+            print("usedGroups/////////////")
+            print(usedGroups)
+            raise
+    
     for face in mesh.tessfaces:
 
         if (progressCur % 10) == 0:
@@ -1521,26 +1548,46 @@ def DecomposeMesh(scene, meshObj, tData, tOptions, errorsDict):
                     
             # Set Vertex bones weights
             if tOptions.doGeometryWei:
-                weights = []
-                # Scan all the vertex group associated to the vertex, type: VertexGroupElement(bpy_struct)
-                for g in vertex.groups:
-                    # The group name should be the bone name, but it can also be an user made vertex group
-                    try:
-                        boneName = meshVertexGroups[g.group].name
-                        try:
-                            boneIndex = bonesMap[boneName].index
-                            if g.weight > 0.0 or not weights:
-                                weights.append( (boneIndex, g.weight) )
-                        except KeyError:
-                            notBonesGroups.add(boneName)
-                    except IndexError:
-                        missingGroups.add(str(g.group))
-                # If we found no bone weight (not even one with weight zero) leave the list equal to None
-                if weights:
-                    tVertex.weights = weights
-                elif tOptions.doForceElements:
-                    tVertex.weights = [(0, 0.0)]
                 
+                # we store a mapping of influences for this vertex
+                min_weight = 0.0
+                influences = {}
+                for vg in vertex.groups:
+                    group_idx = vg.group
+                    
+                    try:
+                        bone_idx = groupIndexToBoneIndex[group_idx]
+                        if vg.weight > min_weight:
+                            influences[bone_idx] = vg.weight
+                        
+                            if len(influences)>4:
+                                keys = sorted(influences, key=lambda x: influences[x], reverse=True)[:4]
+                                influences = {k: influences[k] for k in keys}
+                    except:
+                        missingGroups.add(meshObj.vertex_groups[group_idx].name)
+
+                # normalise weights
+                t = sum( influences.values() )
+                influences = {k: v/t for k,v in influences.items()}
+                
+                if not influences:
+                    tVertex.weights = [(0, 0.0)]
+                else:
+                    # sort influences and ensure we only have a maximum of four
+                    joint_indices = [0,0,0,0]
+                    joint_weights = [0,0,0,0]
+                    for weight_idx, bone_idx in enumerate(influences):
+                        if weight_idx < 4:
+                            index = weight_idx
+                        else:
+                            # replace the weight with the least influence
+                            index = joint_weights.index(min(joint_weights))
+                            
+                        joint_indices[index] = bone_idx
+                        joint_weights[index] = influences[bone_idx]
+                    # the weights will be kept in order (from most influential to least)
+                    tVertex.weights = list(zip(joint_indices, joint_weights))                 
+                     
             # All this code do is "tVertexIndex = verticesMapList.index(tVertex)", but we use
             # a map to speed up.
 
